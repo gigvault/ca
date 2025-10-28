@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS csrs;
+DROP TABLE IF EXISTS certificates;
+
