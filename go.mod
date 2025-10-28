@@ -3,7 +3,7 @@ module github.com/gigvault/ca
 go 1.23
 
 require (
-	github.com/gigvault/shared v0.0.0
+	github.com/gigvault/shared v1.0.0
 	github.com/gorilla/mux v1.8.1
 	github.com/jackc/pgx/v5 v5.5.0
 	go.uber.org/zap v1.26.0
@@ -19,5 +19,3 @@ require (
 	golang.org/x/text v0.14.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/gigvault/shared => ../shared
