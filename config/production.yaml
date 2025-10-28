@@ -1,0 +1,94 @@
+# GigVault CA Service - PRODUCTION SECURE CONFIGURATION
+# ⚠️  ZERO TRUST - All security features ENABLED
+
+service:
+  name: ca
+  environment: production
+  version: 1.0.0
+
+database:
+  host: ${DB_HOST}  # From environment/Kubernetes secret
+  port: 5432
+  database: gigvault_ca
+  user: ${DB_USER}  # From secret
+  password: ${DB_PASSWORD}  # From secret - NEVER commit plaintext!
+  ssl_mode: verify-full  # ✅ REQUIRED: Full SSL verification
+  ssl_cert: /etc/certs/db/client.crt
+  ssl_key: /etc/certs/db/client.key
+  ssl_ca: /etc/certs/db/ca.crt
+  encryption_at_rest: true
+  connection_limit: 100
+  idle_conn_limit: 10
+  conn_max_lifetime: 300  # 5 minutes
+
+server:
+  http_port: 8080
+  grpc_port: 9080
+  host: 0.0.0.0
+
+logging:
+  level: info
+  format: json
+  redact_sensitive: true  # ✅ Redact passwords, keys, tokens
+
+security:
+  # TLS Configuration
+  tls_enabled: true  # ✅ REQUIRED
+  tls_min_version: "1.3"  # ✅ TLS 1.3 only
+  tls_cert_path: /etc/certs/tls/tls.crt
+  tls_key_path: /etc/certs/tls/tls.key
+  
+  # mTLS Configuration
+  mtls_enabled: true  # ✅ REQUIRED: Mutual TLS
+  ca_cert_path: /etc/certs/ca/ca.crt
+  
+  # Authentication
+  auth_enabled: true  # ✅ REQUIRED: JWT authentication
+  jwt_public_key_path: /etc/certs/jwt/public.pem
+  jwt_issuer: gigvault-auth
+  jwt_expiry: 3600  # 1 hour
+  
+  # Rate Limiting
+  rate_limit_enabled: true  # ✅ REQUIRED
+  rate_limit_rps: 100  # 100 requests per second per client
+  rate_limit_burst: 200
+  
+  # CORS
+  cors_enabled: true
+  cors_origins:
+    - https://admin.gigvault.io  # ✅ Whitelist only
+    - https://dashboard.gigvault.io
+  
+  # Audit
+  audit_enabled: true  # ✅ REQUIRED: All actions logged
+  audit_signature_key: /etc/keys/audit.key  # For tamper detection
+
+# CA Specific Configuration
+ca:
+  # CA Certificate and Key (from HSM or secure storage)
+  cert_path: /etc/ca/intermediate-ca.crt
+  key_path: /run/secrets/ca-key  # From Kubernetes secret or HSM
+  
+  # HSM Configuration
+  hsm_enabled: false  # TODO: Enable for production
+  hsm_type: pkcs11  # pkcs11, vault, aws-kms, azure-keyvault
+  hsm_config_path: /etc/hsm/config.yaml
+  
+  # Certificate Defaults
+  default_validity_days: 365
+  max_validity_days: 825  # 27 months (Apple requirement)
+  
+  # Signature Algorithm
+  signature_algorithm: ecdsa-sha256  # ECDSA with SHA-256
+
+# Health Check
+health:
+  timeout: 5s
+  interval: 10s
+
+# Metrics
+metrics:
+  enabled: true
+  port: 9090
+  path: /metrics
+
