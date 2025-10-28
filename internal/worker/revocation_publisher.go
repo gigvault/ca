@@ -4,23 +4,31 @@ import (
 	"context"
 	"time"
 
+	crlpb "github.com/gigvault/shared/api/proto/crl"
+	ocsppb "github.com/gigvault/shared/api/proto/ocsp"
 	"github.com/gigvault/shared/pkg/logger"
 	"github.com/gigvault/shared/pkg/models"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // RevocationPublisher publishes certificate revocations to CRL and OCSP
 type RevocationPublisher struct {
 	crlEndpoint  string
 	ocspEndpoint string
+	crlConn      *grpc.ClientConn
+	ocspConn     *grpc.ClientConn
 	logger       *logger.Logger
 }
 
 // NewRevocationPublisher creates a new revocation publisher
-func NewRevocationPublisher(crlEndpoint, ocspEndpoint string) *RevocationPublisher {
+func NewRevocationPublisher(crlEndpoint, ocspEndpoint string, crlConn, ocspConn *grpc.ClientConn) *RevocationPublisher {
 	return &RevocationPublisher{
 		crlEndpoint:  crlEndpoint,
 		ocspEndpoint: ocspEndpoint,
+		crlConn:      crlConn,
+		ocspConn:     ocspConn,
 		logger:       logger.Global(),
 	}
 }
@@ -59,47 +67,77 @@ func (p *RevocationPublisher) PublishRevocation(ctx context.Context, cert *model
 
 // publishToCRL sends revocation to CRL distribution service
 func (p *RevocationPublisher) publishToCRL(ctx context.Context, cert *models.Certificate) error {
-	// TODO: Implement gRPC/HTTP call to CRL service
-	// For now, log it
-	p.logger.Info("CRL publish (stub)",
-		zap.String("endpoint", p.crlEndpoint),
+	if p.crlConn == nil {
+		p.logger.Warn("CRL connection not configured, skipping CRL publish")
+		return nil
+	}
+
+	client := crlpb.NewCRLServiceClient(p.crlConn)
+	
+	var revokedAtTimestamp *timestamppb.Timestamp
+	if cert.RevokedAt != nil {
+		revokedAtTimestamp = timestamppb.New(*cert.RevokedAt)
+	} else {
+		revokedAtTimestamp = timestamppb.Now()
+	}
+
+	req := &crlpb.AddRevocationRequest{
+		Serial:    cert.Serial,
+		RevokedAt: revokedAtTimestamp,
+		Reason:    "unspecified",
+	}
+
+	_, err := client.AddRevocation(ctx, req)
+	if err != nil {
+		p.logger.Error("Failed to publish to CRL",
+			zap.String("serial", cert.Serial),
+			zap.Error(err),
+		)
+		return err
+	}
+
+	p.logger.Info("Published to CRL",
 		zap.String("serial", cert.Serial),
 	)
-
-	// Example implementation:
-	/*
-		client := crlpb.NewCRLServiceClient(p.crlConn)
-		req := &crlpb.AddRevocationRequest{
-			Serial:     cert.Serial,
-			RevokedAt:  cert.RevokedAt.Unix(),
-			Reason:     "unspecified",
-		}
-		_, err := client.AddRevocation(ctx, req)
-		return err
-	*/
 
 	return nil
 }
 
 // publishToOCSP sends revocation to OCSP responder
 func (p *RevocationPublisher) publishToOCSP(ctx context.Context, cert *models.Certificate) error {
-	// TODO: Implement gRPC/HTTP call to OCSP service
-	// For now, log it
-	p.logger.Info("OCSP publish (stub)",
-		zap.String("endpoint", p.ocspEndpoint),
+	if p.ocspConn == nil {
+		p.logger.Warn("OCSP connection not configured, skipping OCSP publish")
+		return nil
+	}
+
+	client := ocsppb.NewOCSPServiceClient(p.ocspConn)
+	
+	var revokedAtTimestamp *timestamppb.Timestamp
+	if cert.RevokedAt != nil {
+		revokedAtTimestamp = timestamppb.New(*cert.RevokedAt)
+	} else {
+		revokedAtTimestamp = timestamppb.Now()
+	}
+
+	req := &ocsppb.UpdateStatusRequest{
+		SerialNumber:     cert.Serial,
+		Status:           "revoked",
+		RevokedAt:        revokedAtTimestamp,
+		RevocationReason: "unspecified",
+	}
+
+	_, err := client.UpdateStatus(ctx, req)
+	if err != nil {
+		p.logger.Error("Failed to publish to OCSP",
+			zap.String("serial", cert.Serial),
+			zap.Error(err),
+		)
+		return err
+	}
+
+	p.logger.Info("Published to OCSP",
 		zap.String("serial", cert.Serial),
 	)
-
-	// Example implementation:
-	/*
-		client := ocspb.NewOCSPServiceClient(p.ocspConn)
-		req := &ocspb.UpdateStatusRequest{
-			Serial: cert.Serial,
-			Status: "revoked",
-		}
-		_, err := client.UpdateStatus(ctx, req)
-		return err
-	*/
 
 	return nil
 }
