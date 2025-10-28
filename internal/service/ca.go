@@ -15,10 +15,10 @@ import (
 
 // CAService handles certificate authority operations
 type CAService struct {
-	certStorage *storage.CertificateStorage
-	csrStorage  *storage.CSRStorage
-	logger      *logger.Logger
-	// TODO: Load CA certificate and key from secure storage
+	certStorage      *storage.CertificateStorage
+	csrStorage       *storage.CSRStorage
+	logger           *logger.Logger
+	revocationChan   chan<- *models.Certificate // Channel for async revocation publishing
 }
 
 // NewCAService creates a new CA service
@@ -40,7 +40,7 @@ func (s *CAService) GetCertificate(ctx context.Context, serial string) (*models.
 	return s.certStorage.GetBySerial(ctx, serial)
 }
 
-// SignCertificate signs a CSR and creates a certificate
+// SignCertificate signs a CSR and creates a certificate using keystore
 func (s *CAService) SignCertificate(ctx context.Context, csrPEM string, validityDays int) (*models.Certificate, error) {
 	// Parse the CSR
 	csr, err := crypto.ParseCSR([]byte(csrPEM))
@@ -48,13 +48,13 @@ func (s *CAService) SignCertificate(ctx context.Context, csrPEM string, validity
 		return nil, fmt.Errorf("failed to parse CSR: %w", err)
 	}
 
-	s.logger.Info("Signing certificate",
+	s.logger.Info("Signing certificate with keystore",
 		zap.String("subject", csr.Subject.CommonName),
+		zap.String("ca_key_id", s.caKeyID),
 		zap.Int("validity_days", validityDays),
 	)
 
-	// TODO: In production, load the actual CA certificate and key from secure storage
-	// For now, generate a temporary certificate template
+	// Create certificate template
 	template, err := crypto.CreateCertificateTemplate(csr.Subject.CommonName, validityDays)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create certificate template: %w", err)
@@ -67,14 +67,26 @@ func (s *CAService) SignCertificate(ctx context.Context, csrPEM string, validity
 		Country:      csr.Subject.Country,
 	}
 
-	// TODO: Load CA key and cert, then sign
-	// For development, we'll create a self-signed cert as placeholder
-	caKey, err := crypto.GenerateP256Key()
+	// Load encrypted CA key from keystore
+	encryptedKey, err := s.keystore.Storage.Get(ctx, s.caKeyID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate CA key: %w", err)
+		return nil, fmt.Errorf("failed to load CA key from keystore: %w", err)
 	}
 
-	certPEM, err := crypto.SignCertificate(template, template, csr.PublicKey, caKey)
+	// Decrypt CA key (key will be in memory only during signing)
+	caKey, err := s.keystore.DecryptPrivateKey(encryptedKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt CA key: %w", err)
+	}
+	// Ensure key is zeroed from memory after use
+	defer func() {
+		if caKey != nil && caKey.D != nil {
+			caKey.D.SetInt64(0)
+		}
+	}()
+
+	// Sign the certificate with CA key
+	certPEM, err := crypto.SignCertificate(template, s.caCert, csr.PublicKey, caKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sign certificate: %w", err)
 	}
@@ -93,6 +105,11 @@ func (s *CAService) SignCertificate(ctx context.Context, csrPEM string, validity
 	if err := s.certStorage.Create(ctx, cert); err != nil {
 		return nil, fmt.Errorf("failed to store certificate: %w", err)
 	}
+
+	s.logger.Info("Certificate signed successfully",
+		zap.String("serial", cert.Serial),
+		zap.String("subject", cert.SubjectCN),
+	)
 
 	return cert, nil
 }
@@ -114,7 +131,15 @@ func (s *CAService) RevokeCertificate(ctx context.Context, serial string) error 
 		return fmt.Errorf("failed to update certificate: %w", err)
 	}
 
-	// TODO: Publish to CRL and OCSP responder
+	// Publish to CRL and OCSP responder (async via worker)
+	if s.revocationChan != nil {
+		select {
+		case s.revocationChan <- cert:
+			s.logger.Info("Revocation queued for publishing", zap.String("serial", serial))
+		default:
+			s.logger.Warn("Revocation channel full, publishing may be delayed", zap.String("serial", serial))
+		}
+	}
 
 	return nil
 }
