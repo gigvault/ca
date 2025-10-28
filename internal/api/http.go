@@ -154,9 +154,15 @@ func (h *HTTPHandler) GetCSR(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	id := vars["id"]
 
-	// TODO: Implement GetCSR
-	h.logger.Info("GetCSR called", zap.String("id", id))
-	http.Error(w, "Not implemented", http.StatusNotImplemented)
+	csr, err := h.service.GetCSR(r.Context(), id)
+	if err != nil {
+		h.logger.Error("Failed to get CSR", zap.String("id", id), zap.Error(err))
+		http.Error(w, "CSR not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(csr)
 }
 
 // loggingMiddleware logs HTTP requests

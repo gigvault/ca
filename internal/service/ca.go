@@ -147,6 +147,16 @@ func (s *CAService) SubmitCSR(ctx context.Context, csrPEM, submittedBy string) (
 	return csrModel, nil
 }
 
+// GetCSR retrieves a CSR by ID
+func (s *CAService) GetCSR(ctx context.Context, id string) (*models.CSR, error) {
+	return s.csrStorage.GetByID(ctx, id)
+}
+
+// ListCSRs lists all CSRs with optional status filter
+func (s *CAService) ListCSRs(ctx context.Context, status string) ([]*models.CSR, error) {
+	return s.csrStorage.List(ctx, status)
+}
+
 func getFirst(s []string) string {
 	if len(s) > 0 {
 		return s[0]
