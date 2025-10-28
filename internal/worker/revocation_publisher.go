@@ -160,12 +160,32 @@ func (p *RevocationPublisher) StartWorker(ctx context.Context, revocationChan <-
 				publishCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
 
-				if err := p.PublishRevocation(publishCtx, c); err != nil {
-					p.logger.Error("Failed to publish revocation",
-						zap.Error(err),
-						zap.String("serial", c.Serial),
-					)
-					// TODO: Implement retry mechanism with exponential backoff
+				// Retry with exponential backoff
+				maxRetries := 3
+				backoff := time.Second
+
+				for attempt := 0; attempt < maxRetries; attempt++ {
+					if err := p.PublishRevocation(publishCtx, c); err != nil {
+						if attempt < maxRetries-1 {
+							p.logger.Warn("Publish failed, retrying",
+								zap.Error(err),
+								zap.String("serial", c.Serial),
+								zap.Int("attempt", attempt+1),
+								zap.Duration("backoff", backoff),
+							)
+							time.Sleep(backoff)
+							backoff *= 2 // Exponential backoff
+							continue
+						}
+						p.logger.Error("Failed to publish revocation after retries",
+							zap.Error(err),
+							zap.String("serial", c.Serial),
+							zap.Int("attempts", maxRetries),
+						)
+					} else {
+						// Success
+						break
+					}
 				}
 			}(cert)
 		}
