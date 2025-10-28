@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/gigvault/shared/pkg/logger"
@@ -14,7 +13,7 @@ import (
 type RevocationPublisher struct {
 	crlEndpoint  string
 	ocspEndpoint string
-	logger       *zap.Logger
+	logger       *logger.Logger
 }
 
 // NewRevocationPublisher creates a new revocation publisher
@@ -134,4 +133,3 @@ func (p *RevocationPublisher) StartWorker(ctx context.Context, revocationChan <-
 		}
 	}
 }
-

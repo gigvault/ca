@@ -2,12 +2,14 @@ package service
 
 import (
 	"context"
+	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
 	"time"
 
 	"github.com/gigvault/ca/internal/storage"
 	"github.com/gigvault/shared/pkg/crypto"
+	"github.com/gigvault/shared/pkg/keystore"
 	"github.com/gigvault/shared/pkg/logger"
 	"github.com/gigvault/shared/pkg/models"
 	"go.uber.org/zap"
@@ -15,10 +17,13 @@ import (
 
 // CAService handles certificate authority operations
 type CAService struct {
-	certStorage      *storage.CertificateStorage
-	csrStorage       *storage.CSRStorage
-	logger           *logger.Logger
-	revocationChan   chan<- *models.Certificate // Channel for async revocation publishing
+	certStorage    *storage.CertificateStorage
+	csrStorage     *storage.CSRStorage
+	logger         *logger.Logger
+	revocationChan chan<- *models.Certificate // Channel for async revocation publishing
+	keystore       *keystore.EnvelopeEncryption
+	caCert         *x509.Certificate
+	caKeyID        string
 }
 
 // NewCAService creates a new CA service
@@ -27,6 +32,27 @@ func NewCAService(certStorage *storage.CertificateStorage, csrStorage *storage.C
 		certStorage: certStorage,
 		csrStorage:  csrStorage,
 		logger:      logger,
+	}
+}
+
+// NewCAServiceWithKeystore creates a new CA service with keystore integration
+func NewCAServiceWithKeystore(
+	certStorage *storage.CertificateStorage,
+	csrStorage *storage.CSRStorage,
+	logger *logger.Logger,
+	revocationChan chan<- *models.Certificate,
+	keystore *keystore.EnvelopeEncryption,
+	caCert *x509.Certificate,
+	caKeyID string,
+) *CAService {
+	return &CAService{
+		certStorage:    certStorage,
+		csrStorage:     csrStorage,
+		logger:         logger,
+		revocationChan: revocationChan,
+		keystore:       keystore,
+		caCert:         caCert,
+		caKeyID:        caKeyID,
 	}
 }
 
@@ -40,7 +66,7 @@ func (s *CAService) GetCertificate(ctx context.Context, serial string) (*models.
 	return s.certStorage.GetBySerial(ctx, serial)
 }
 
-// SignCertificate signs a CSR and creates a certificate using keystore
+// SignCertificate signs a CSR and creates a certificate
 func (s *CAService) SignCertificate(ctx context.Context, csrPEM string, validityDays int) (*models.Certificate, error) {
 	// Parse the CSR
 	csr, err := crypto.ParseCSR([]byte(csrPEM))
@@ -48,6 +74,18 @@ func (s *CAService) SignCertificate(ctx context.Context, csrPEM string, validity
 		return nil, fmt.Errorf("failed to parse CSR: %w", err)
 	}
 
+	// Check if keystore is configured
+	if s.keystore != nil && s.caCert != nil && s.caKeyID != "" {
+		// Use keystore for signing (production mode)
+		return s.signWithKeystore(ctx, csr, validityDays)
+	}
+
+	// Fallback to temporary key generation (development mode)
+	return s.signWithTemporaryKey(ctx, csr, validityDays)
+}
+
+// signWithKeystore signs using the keystore (production)
+func (s *CAService) signWithKeystore(ctx context.Context, csr *x509.CertificateRequest, validityDays int) (*models.Certificate, error) {
 	s.logger.Info("Signing certificate with keystore",
 		zap.String("subject", csr.Subject.CommonName),
 		zap.String("ca_key_id", s.caKeyID),
@@ -106,10 +144,59 @@ func (s *CAService) SignCertificate(ctx context.Context, csrPEM string, validity
 		return nil, fmt.Errorf("failed to store certificate: %w", err)
 	}
 
-	s.logger.Info("Certificate signed successfully",
+	s.logger.Info("Certificate signed successfully with keystore",
 		zap.String("serial", cert.Serial),
 		zap.String("subject", cert.SubjectCN),
 	)
+
+	return cert, nil
+}
+
+// signWithTemporaryKey signs using a temporary key (development only)
+func (s *CAService) signWithTemporaryKey(ctx context.Context, csr *x509.CertificateRequest, validityDays int) (*models.Certificate, error) {
+	s.logger.Warn("Signing certificate with temporary key (DEVELOPMENT ONLY)",
+		zap.String("subject", csr.Subject.CommonName),
+	)
+
+	// Create certificate template
+	template, err := crypto.CreateCertificateTemplate(csr.Subject.CommonName, validityDays)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create certificate template: %w", err)
+	}
+
+	// Copy subject information from CSR
+	template.Subject = pkix.Name{
+		CommonName:   csr.Subject.CommonName,
+		Organization: csr.Subject.Organization,
+		Country:      csr.Subject.Country,
+	}
+
+	// Generate temporary CA key (DEVELOPMENT ONLY!)
+	caKey, err := crypto.GenerateP256Key()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate CA key: %w", err)
+	}
+
+	// Self-sign (no real CA)
+	certPEM, err := crypto.SignCertificate(template, template, csr.PublicKey, caKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign certificate: %w", err)
+	}
+
+	// Store certificate in database
+	cert := &models.Certificate{
+		Serial:    template.SerialNumber.String(),
+		SubjectCN: template.Subject.CommonName,
+		NotBefore: template.NotBefore,
+		NotAfter:  template.NotAfter,
+		PEM:       string(certPEM),
+		Revoked:   false,
+		CreatedAt: time.Now(),
+	}
+
+	if err := s.certStorage.Create(ctx, cert); err != nil {
+		return nil, fmt.Errorf("failed to store certificate: %w", err)
+	}
 
 	return cert, nil
 }

@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"database/sql"
 	"encoding/pem"
@@ -15,12 +17,12 @@ import (
 
 // KeystoreConfig holds keystore initialization configuration
 type KeystoreConfig struct {
-	HSMEnabled     bool
-	HSMMasterKey   string // From environment or HSM device
-	CAKeyID        string
-	CACertPath     string
-	CAKeyPath      string // Only for initial setup, then deleted
-	DatabaseDSN    string
+	HSMEnabled   bool
+	HSMMasterKey string // From environment or HSM device
+	CAKeyID      string
+	CACertPath   string
+	CAKeyPath    string // Only for initial setup, then deleted
+	DatabaseDSN  string
 }
 
 // InitializeKeystore initializes the keystore and loads/creates CA keys
@@ -47,16 +49,15 @@ func InitializeKeystore(ctx context.Context, cfg KeystoreConfig, logger *zap.Log
 		}
 	}
 
-	// 2. Create envelope encryption handler
-	envelope := keystore.NewEnvelopeEncryption(hsm)
-
-	// 3. Initialize database connection for keystore
+	// 2. Initialize database connection for keystore
 	db, err := sql.Open("postgres", cfg.DatabaseDSN)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
 	storage := keystore.NewKeyStorage(db)
-	envelope.Storage = storage
+
+	// 3. Create envelope encryption handler with storage
+	envelope := keystore.NewEnvelopeEncryption(hsm, storage)
 
 	// 4. Load or create CA certificate and key
 	var caCert *x509.Certificate
@@ -175,7 +176,7 @@ func SignWithKeystore(ctx context.Context, envelope *keystore.EnvelopeEncryption
 // This should only be used during initial setup
 func GenerateAndStoreCAKey(ctx context.Context, envelope *keystore.EnvelopeEncryption, keyID string, outputDir string) (*ecdsa.PrivateKey, *x509.Certificate, error) {
 	// Generate CA private key
-	privateKey, err := ecdsa.GenerateKey(ecdsa.P256(), nil)
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate CA key: %w", err)
 	}
@@ -195,4 +196,3 @@ func GenerateAndStoreCAKey(ctx context.Context, envelope *keystore.EnvelopeEncry
 
 	return privateKey, nil, nil
 }
-
