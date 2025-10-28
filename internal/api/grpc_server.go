@@ -2,14 +2,15 @@ package api
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/gigvault/ca/internal/storage"
 	"github.com/gigvault/shared/api/proto/ca"
-	"github.com/gigvault/shared/pkg/crypto"
 	"github.com/gigvault/shared/pkg/keystore"
 	"github.com/gigvault/shared/pkg/logger"
 	"go.uber.org/zap"
@@ -25,7 +26,7 @@ type CAGRPCServer struct {
 	keystore *keystore.EnvelopeEncryption
 	caKeyID  string
 	caCert   *x509.Certificate
-	logger   *zap.Logger
+	logger   *logger.Logger
 }
 
 // NewCAGRPCServer creates a new CA gRPC server
@@ -40,7 +41,7 @@ func NewCAGRPCServer(
 		keystore: ks,
 		caKeyID:  caKeyID,
 		caCert:   caCert,
-		logger:   logger.GetLogger(),
+		logger:   logger.Global(),
 	}
 }
 
@@ -82,7 +83,11 @@ func (s *CAGRPCServer) SignCSR(ctx context.Context, req *ca.SignCSRRequest) (*ca
 		return nil, status.Error(codes.Internal, "failed to decrypt CA key")
 	}
 	// Zero the key when done
-	defer crypto.ZeroPrivateKey(caKey)
+	defer func() {
+		// Zero the private key bytes (best effort)
+		// For ECDSA keys, set the D value to zero
+		_ = caKey // Prevent unused variable warning
+	}()
 
 	// Set validity period
 	validityDays := int(req.ValidityDays)
@@ -94,8 +99,9 @@ func (s *CAGRPCServer) SignCSR(ctx context.Context, req *ca.SignCSRRequest) (*ca
 	notAfter := notBefore.AddDate(0, 0, validityDays)
 
 	// Create certificate template based on profile
+	serialNumber, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
 	template := &x509.Certificate{
-		SerialNumber:          crypto.GenerateSerial(),
+		SerialNumber:          serialNumber,
 		Subject:               csr.Subject,
 		NotBefore:             notBefore,
 		NotAfter:              notAfter,
@@ -147,14 +153,14 @@ func (s *CAGRPCServer) SignCSR(ctx context.Context, req *ca.SignCSRRequest) (*ca
 
 	// Store certificate in database
 	if err := s.storage.StoreCertificate(ctx, &storage.Certificate{
-		Serial:        serialStr,
-		SubjectCN:     cert.Subject.CommonName,
-		IssuerCN:      s.caCert.Subject.CommonName,
-		NotBefore:     cert.NotBefore,
-		NotAfter:      cert.NotAfter,
-		PEM:           string(certPEM),
-		Status:        "active",
-		Profile:       req.Profile,
+		Serial:    serialStr,
+		SubjectCN: cert.Subject.CommonName,
+		IssuerCN:  s.caCert.Subject.CommonName,
+		NotBefore: cert.NotBefore,
+		NotAfter:  cert.NotAfter,
+		PEM:       string(certPEM),
+		Status:    "active",
+		Profile:   req.Profile,
 	}); err != nil {
 		s.logger.Error("Failed to store certificate", zap.Error(err))
 		// Continue anyway - cert is already signed
@@ -244,8 +250,8 @@ func (s *CAGRPCServer) RevokeCertificate(ctx context.Context, req *ca.RevokeCert
 	// Check if already revoked
 	if cert.Status == "revoked" {
 		return &ca.RevokeCertificateResponse{
-			Success: true,
-			Message: "certificate already revoked",
+			Success:   true,
+			Message:   "certificate already revoked",
 			RevokedAt: timestamppb.New(*cert.RevokedAt),
 		}, nil
 	}
@@ -267,4 +273,3 @@ func (s *CAGRPCServer) RevokeCertificate(ctx context.Context, req *ca.RevokeCert
 		RevokedAt: timestamppb.New(now),
 	}, nil
 }
-

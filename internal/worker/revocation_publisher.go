@@ -73,7 +73,7 @@ func (p *RevocationPublisher) publishToCRL(ctx context.Context, cert *models.Cer
 	}
 
 	client := crlpb.NewCRLServiceClient(p.crlConn)
-	
+
 	var revokedAtTimestamp *timestamppb.Timestamp
 	if cert.RevokedAt != nil {
 		revokedAtTimestamp = timestamppb.New(*cert.RevokedAt)
@@ -82,9 +82,9 @@ func (p *RevocationPublisher) publishToCRL(ctx context.Context, cert *models.Cer
 	}
 
 	req := &crlpb.AddRevocationRequest{
-		Serial:    cert.Serial,
-		RevokedAt: revokedAtTimestamp,
-		Reason:    "unspecified",
+		SerialNumber: cert.Serial,
+		RevokedAt:    revokedAtTimestamp,
+		Reason:       "unspecified",
 	}
 
 	_, err := client.AddRevocation(ctx, req)
@@ -111,7 +111,7 @@ func (p *RevocationPublisher) publishToOCSP(ctx context.Context, cert *models.Ce
 	}
 
 	client := ocsppb.NewOCSPServiceClient(p.ocspConn)
-	
+
 	var revokedAtTimestamp *timestamppb.Timestamp
 	if cert.RevokedAt != nil {
 		revokedAtTimestamp = timestamppb.New(*cert.RevokedAt)
